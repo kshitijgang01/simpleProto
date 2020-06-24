@@ -5,16 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	_ "fmt"
-	"github.com/gorilla/mux"
-	"github.com/gorilla/schema"
-	"github.com/gorilla/securecookie"
-	_ "github.com/lib/pq"
 	"html/template"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/gorilla/mux"
+	"github.com/gorilla/schema"
+	"github.com/gorilla/securecookie"
+	_ "github.com/lib/pq"
 )
 
 //https://www.alphavantage.co/query?function=CURRENCY_EXCHANGE_RATE&from_currency=BTC&to_currency=CNY&apikey=
@@ -51,7 +52,10 @@ type Info struct {
 	Volume        string `json:"6. volume"`
 	Dividend      string `json:"7. dividend amount"`
 }
-
+type Msg struct {
+	id  int
+	msg string
+}
 type TimeSeriesMonthly struct {
 	MetaData struct {
 		BasicInfo string `json:"1. Information"`
@@ -65,8 +69,6 @@ type Login struct {
 	UserName string
 	Password string
 }
-
-
 type User struct {
 	UserName string
 	Password string
@@ -76,6 +78,9 @@ type Stock struct {
 	Symbol    string
 	Quantity  int
 	OrigValue float64
+}
+type LoginDisplay struct {
+	UserName string
 }
 type Stocks []Stock
 type Crypto struct {
@@ -128,7 +133,7 @@ type AllData struct {
 var psqlInfo string
 var db *sql.DB
 var cache = make(map[string]StoredPrice)
-var cookieHandler = securecookie.New(securecookie.GenerateRandomKey(64),securecookie.GenerateRandomKey(32))
+var cookieHandler = securecookie.New(securecookie.GenerateRandomKey(64), securecookie.GenerateRandomKey(32))
 
 func init() {
 	psqlInfo = fmt.Sprintf("host=%s port=%d user=%s "+
@@ -154,20 +159,24 @@ func main() {
 	router.HandleFunc("/", infoForm).Methods("GET")
 	//router.HandleFunc("/cryptoExchange",infoProvider).Methods
 	router.HandleFunc("/register", userRegisterForm).Methods("GET")
+	router.HandleFunc("/index", index).Methods("GET")
+	router.HandleFunc("/home", home).Methods("GET")
+	router.HandleFunc("/Already_logged_in", already_logged_in).Methods("GET")
+	router.HandleFunc("/justRegistered", justRegistered).Methods("GET")
+	router.HandleFunc("/login", loginForm).Methods("GET")
+	router.HandleFunc("/login", loginProcess).Methods("POST")
+	router.HandleFunc("/logout", logout).Methods("GET")
+	router.HandleFunc("/register", userRegisteration).Methods("POST")
+
 	router.HandleFunc("/addData", currencyRegisterForm).Methods("GET")
 	router.HandleFunc("/addData", currencyRegister).Methods("POST")
-	router.HandleFunc("/register", userRegisteration).Methods("POST")
 	router.HandleFunc("/cryptoExchangeJSON", jsonProvider).Methods("GET")
 	router.HandleFunc("/profit", profitCalculator).Methods("GET")
 	router.HandleFunc("/stockPrice", stockCalculator).Methods("GET")
 	router.HandleFunc("/stockForm", stockRegistration).Methods("GET")
 	router.HandleFunc("/stockForm", stockProcess).Methods("POST")
 	router.HandleFunc("/stockProfit", stockProfit).Methods("GET")
-	router.HandleFunc("/login",loginForm).Methods("GET")
-	router.HandleFunc("/login",loginProcess).Methods("POST")
-	router.HandleFunc("/logout",logout).Methods("GET")
-	router.HandleFunc("/test",tester).Methods("GET")
-
+	router.HandleFunc("/test", tester).Methods("GET")
 
 	http.ListenAndServe(CONN_HOST+":"+CONN_PORT, router)
 }
@@ -176,78 +185,157 @@ func tester(writer http.ResponseWriter, request *http.Request) {
 	log.Printf("reading cookie")
 	var userName string
 	cookie, err := request.Cookie("session")
-	if err==nil {
+	if err == nil {
 		cookieValue := make(map[string]string)
-		err = cookieHandler.Decode("session",cookie.Value,&cookieValue)
-		if err==nil{
-			userName=cookieValue["userName"]
-		}else {
-			log.Printf("no cookie",err)
+		err = cookieHandler.Decode("session", cookie.Value, &cookieValue)
+		if err == nil {
+			userName = cookieValue["userName"]
+		} else {
+			log.Printf("no cookie", err)
 		}
 
-	}else {
-		log.Printf("no cookie",err)
+	} else {
+		log.Printf("no cookie", err)
 	}
-	fmt.Fprintf(writer,userName)
+	fmt.Fprintf(writer, userName)
 
 }
 
 func logout(writer http.ResponseWriter, request *http.Request) {
 	clearSession(writer)
-	http.Redirect(writer,request,"/",302)
-}
+	http.Redirect(writer, request, "/home", 302)
 
+}
+func already_logged_in(writer http.ResponseWriter, request *http.Request) {
+	parsedTemplate, err := template.ParseFiles("templates/msg.html")
+	if err != nil {
+		fmt.Printf("can't parse file templates/msg.html")
+	}
+	message := Msg{
+		id:  1,
+		msg: "You are already logged in, click logout button to log in again",
+	}
+	err = parsedTemplate.Execute(writer, message)
+	if err != nil {
+		log.Printf("Cant write into already_logged_in ")
+	}
+}
 func loginProcess(writer http.ResponseWriter, request *http.Request) {
-	request.ParseForm()
+	parseErr := request.ParseForm()
+	if parseErr != nil {
+		log.Printf("cant parse post form")
+	}
+
+	if _, err := request.Cookie("session"); err == nil {
+		fmt.Printf("You are already logged in, first log out by clicking logout button")
+		http.Redirect(writer, request, "/Already_logged_in", 302)
+		return
+	}
+
 	login := new(Login)
 	decoder := schema.NewDecoder()
 	log.Printf("inside process")
 	decodeErr := decoder.Decode(login, request.PostForm)
 	if decodeErr != nil {
-		log.Printf("error parsing form")
+		log.Printf("error decoding form")
 		return
 	}
 
 	sqlStatement := `SELECT id,username,password FROM users WHERE username=$1 AND password = $2`
-	row := db.QueryRow(sqlStatement, login.UserName,login.Password)
+	row := db.QueryRow(sqlStatement, login.UserName, login.Password)
 	var name, password string
 	var id int
-	err := row.Scan(&id,&name, &password)
-	if err== sql.ErrNoRows {
-		log.Printf("no user like this")
+	err := row.Scan(&id, &name, &password)
+	if err == sql.ErrNoRows {
+		log.Printf("no user like this usr_name: ", login)
 		return
-	} else if err!=nil{
+	} else if err != nil {
 		panic(err)
 	}
-	value:=map[string]string{
-		"userName" :name,
-		"Id" : string(id),
+	value := map[string]string{
+		"userName": name,
+		"Id":       string(id),
 	}
-	encoded ,err :=cookieHandler.Encode("session",value)
-	if err==nil {
+	encoded, err := cookieHandler.Encode("session", value)
+	redirectUrl := "/index"
+	if err == nil {
 		cookie := &http.Cookie{
 			Name:  "session",
 			Value: encoded,
 			Path:  "/",
 		}
-		http.SetCookie(writer,cookie)
+		http.SetCookie(writer, cookie)
 	}
-	fmt.Fprintf(writer,name,password,id)
+
+	// fmt.Fprintf(writer, name, password, id)
+	http.Redirect(writer, request, redirectUrl, 302)
 }
 
 func loginForm(writer http.ResponseWriter, request *http.Request) {
-	parsedTemplate,err:=template.ParseFiles("templates/login.html")
-	if err!=nil {
-		log.Printf("error parsing form",err)
+	parsedTemplate, err := template.ParseFiles("templates/login.html")
+	if err != nil {
+		log.Printf("error parsing form", err)
 	}
-	err=parsedTemplate.Execute(writer,nil)
-	if err!=nil {
-		log.Printf("error executing form",err)
+	err = parsedTemplate.Execute(writer, nil)
+	if err != nil {
+		log.Printf("error executing form", err)
 	}
 
 }
+func home(writer http.ResponseWriter, request *http.Request) {
+	parsedTemplate, err := template.ParseFiles("templates/home.html")
+	if err != nil {
+		log.Printf("error parsing home.html", err)
 
+	}
+	err = parsedTemplate.Execute(writer, nil)
+	if err != nil {
+		log.Printf("error writing to form", err)
+	}
+}
+func index(writer http.ResponseWriter, request *http.Request) {
+	parsedTemplate, err := template.ParseFiles("templates/index.html")
 
+	if err != nil {
+		log.Printf("error parsing index.html", err)
+	}
+
+	loginVars := LoginDisplay{
+		UserName: getUserName(request),
+	}
+
+	err = parsedTemplate.Execute(writer, loginVars)
+	if err != nil {
+		log.Printf("error writing to index", err)
+	}
+	log.Printf("The username is", getUserName(request))
+
+}
+
+// func get_field_value_from_cookie(c http.Cookie, cookiename string, field string) (ret string) {
+// 	cookieValue := make(map[string]string)
+// 	if err := cookieHandler.Decode(cookiename, c.Value, &cookieValue); err == nil {
+// 		ret = cookieValue[field]
+// 	} else {
+// 		log.Printf("cant get", cookiename, "from", c.Name, "cookie")
+// 	}
+// 	return ret
+// }
+func getUserName(request *http.Request) (userName string) {
+	cookie, err := request.Cookie("session")
+	userName = "invalid UserName, please login"
+	if err == nil {
+		cookieValue := make(map[string]string)
+		if err = cookieHandler.Decode("session", cookie.Value, &cookieValue); err == nil {
+			userName = cookieValue["userName"]
+		} else {
+			log.Printf("Got the session but can't decode cookie.Value")
+		}
+	} else {
+		log.Printf("Cant get the cookie")
+	}
+	return userName
+}
 
 func stockProfit(writer http.ResponseWriter, request *http.Request) {
 	sqlStatement := `SELECT stock,quantity,orig_value FROM stocks WHERE users_id=1`
@@ -399,6 +487,33 @@ func currencyRegisterForm(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
+func justRegistered(writer http.ResponseWriter, request *http.Request) {
+	parsedTemplate, err := template.ParseFiles("templates/justRegistered.html")
+	if err != nil {
+		log.Printf("error parsing justregistered", err)
+	}
+	username := ""
+
+	if cookie, err := request.Cookie("registry"); err == nil {
+		value := make(map[string]string)
+		if err = cookieHandler.Decode("registry", cookie.Value, &value); err == nil {
+			username = value["userName"]
+		} else {
+			fmt.Printf("there's a cookie registry but cant decode its value")
+		}
+	} else {
+		http.Redirect(writer, request, "/home", 302)
+		return
+	}
+	loginVars := LoginDisplay{
+		UserName: username,
+	}
+	err = parsedTemplate.Execute(writer, loginVars)
+	if err != nil {
+		log.Printf("error executing justRegistered", err)
+	}
+
+}
 func userRegisteration(writer http.ResponseWriter, request *http.Request) {
 	request.ParseForm()
 	user := new(User)
@@ -411,11 +526,14 @@ func userRegisteration(writer http.ResponseWriter, request *http.Request) {
     INSERT INTO users (username,password,email)
 	VALUES ($1,$2,$3)`
 	_, err := db.Exec(sqlStatement, user.UserName, user.Password, user.Email)
+	redirectUrl := "/home"
 	if err != nil {
 		log.Printf("error in database", err)
 	} else {
-		fmt.Fprintf(writer, "user successfully registered"+user.UserName)
+		redirectUrl = "/justRegistered"
+
 	}
+	http.Redirect(writer, request, redirectUrl, 302)
 }
 
 func userRegisterForm(writer http.ResponseWriter, request *http.Request) {
@@ -596,12 +714,12 @@ func StockRate(stockSymbol string) float64 {
 	return rate
 }
 
-func clearSession(w http.ResponseWriter)  {
+func clearSession(w http.ResponseWriter) {
 	cookie := &http.Cookie{
-		Name: "session",
-		Value: "",
-		Path: "/",
+		Name:   "session",
+		Value:  "",
+		Path:   "/",
 		MaxAge: -1,
 	}
-	http.SetCookie(w,cookie)
+	http.SetCookie(w, cookie)
 }
